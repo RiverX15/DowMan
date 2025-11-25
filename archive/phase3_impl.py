@@ -44,22 +44,22 @@ async def download_and_write(f, session: aiohttp.ClientSession, url: str, l: int
     f.write(data)
 
 def get_filename(url: str, headers):
-    # 1. If `content-disposition` header is present
+    # if `content-disposition` header is present
     content_disposition = headers.get('content-disposition')
     if content_disposition and 'filename=' in content_disposition:
         filename = content_disposition.split('filename=')[1].strip('"\'')
         return filename
-    # 2. If URL has file format specified
+    # if URL has file format specified
     url_path = url.split('/')[-1]
     if '.' in url_path:
         return url_path
-    # 3. Guess extension from `content-type`
+    # guess extension from `content-type`
     content_type = headers.get('content-type')
     if content_type:
-        extension = mimetypes.guess_file_type(content_type)
+        extension = mimetypes.guess_extension(content_type)
         if extension:
             return f"downloaded_file{extension}"
-    # 4. If everything fails
+    # if everything fails
     return "downloaded_file.bin"
 
 async def main(url: str):
@@ -76,6 +76,6 @@ async def main(url: str):
 
 if __name__ == '__main__':
     start = time.perf_counter()
-    url = 'https://fastly.picsum.photos/id/1029/200/200.jpg?hmac=CQyxD4azaGb2UDjepBq254UP9v1mF-_rBhYVx8Jw8rs'
+    url = 'https://httpbin.io/range/102400'
     asyncio.run(main(url))
     print(f'Time taken: {time.perf_counter() - start:.2f} s')
