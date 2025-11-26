@@ -1,6 +1,7 @@
 from aiohttp import web
 import asyncio
 import os
+import random
 
 
 FILE_PATH = 'test_file.bin'
@@ -8,12 +9,12 @@ ARTIFICIAL_DELAY = 5.0
 
 async def handle_download(request):
     print(f"Request received: {request.headers.get('Range', 'No Range')}")
-    await asyncio.sleep(ARTIFICIAL_DELAY)
+    await asyncio.sleep(random.uniform(0.5, 5.0))
     return web.FileResponse(FILE_PATH)
 
 async def handle_download_without_ranges(request):
     print(f"Request received without range support: {request.headers.get('Range', 'No Range')}")
-    await asyncio.sleep(ARTIFICIAL_DELAY)
+    await asyncio.sleep(random.uniform(0.5, 5.0))
     with open(FILE_PATH, 'rb') as f:
         data = f.read()
     return web.Response(body=data)

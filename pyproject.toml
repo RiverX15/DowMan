@@ -5,4 +5,5 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.13.2",
+    "rich>=14.2.0",
 ]

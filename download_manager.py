@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 import time
 import mimetypes
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn
 
 
 URL = 'http://localhost:8080'
@@ -20,6 +21,7 @@ class DownloadManager:
         self.chunk_size = chunk_size_mb*1024*1024
         self.queue = asyncio.Queue()
         self.file = None
+        self.progress = None
 
     async def get_file_info(self, session: aiohttp.ClientSession):
         async def get_content_headers(session: aiohttp.ClientSession, url: str):
@@ -84,38 +86,48 @@ class DownloadManager:
                     return b""
 
         data = await get_bytes(session, self.url, start, end)
+        # synchronous (blocking) file i/o operations. use aiofiles if this causes bottleneck
         self.file.seek(start)
         self.file.write(data)
 
-    async def worker(self, session: aiohttp.ClientSession, worker_id: int):
+    async def worker(self, session: aiohttp.ClientSession, worker_id: int, task_id: int, content_length: int):
         while True:
             r = await self.queue.get()
             try:
                 await self.download_chunk(session, r[0], r[1])
             finally:
                 self.queue.task_done()
+                self.progress.advance(task_id, advance=((r[1]-r[0]+1)/content_length)*100)
 
     async def start(self):
-        async with aiohttp.ClientSession() as session:
-            content_length, filename, accept_ranges = await self.get_file_info(session)
-            if not accept_ranges:
-                print(f'Server does not support range requests. Downloading sequentially.')
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn()
+        ) as self.progress:
+            download_task = self.progress.add_task(f"[red]Downloading from {self.url} ", total=100)
+            async with aiohttp.ClientSession() as session:
+                content_length, filename, accept_ranges = await self.get_file_info(session)
+                if not accept_ranges:
+                    print(f'Server does not support range requests. Downloading sequentially.')
+                    with open(filename, 'wb') as self.file:
+                        async with session.get(self.url) as resp:
+                            resp.raise_for_status()
+                            data = await resp.read()
+                            self.file.write(data)
+                    return
                 with open(filename, 'wb') as self.file:
-                    async with session.get(self.url) as resp:
-                        resp.raise_for_status()
-                        data = await resp.read()
-                        self.file.write(data)
-                return
-            with open(filename, 'wb') as self.file:
-                # start consumers
-                workers = [asyncio.create_task(self.worker(session, i)) for i in range(self.max_concurrent)]
-                # start producers
-                self.populate_queue(content_length)
-                # wait for queue to be empty
-                await self.queue.join()
-                # cancel all workers
-                for w in workers:
-                    w.cancel()
+                    # start consumers
+                    workers = [asyncio.create_task(self.worker(session, i, download_task, content_length)) for i in range(self.max_concurrent)]
+                    # start producers
+                    self.populate_queue(content_length)
+                    # wait for queue to be empty
+                    await self.queue.join()
+                    # cancel all workers
+                    for w in workers:
+                        w.cancel()
 
 if __name__ == '__main__':
     start = time.perf_counter()
