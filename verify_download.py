@@ -17,4 +17,7 @@ def compare_files(path1, path2, chunk_size = CHUNK_SIZE):
             if not chunk1:
                 return True
 
-print(compare_files(ORIGINAL_FILE_PATH, DOWNLOADED_FILE_PATH))
+if compare_files(ORIGINAL_FILE_PATH, DOWNLOADED_FILE_PATH):
+    print('Downloaded file and source file match.')
+else:
+    print('Downloaded file and source file do not match.')

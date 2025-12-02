@@ -11,6 +11,7 @@ URL = 'http://localhost:8080'
 NUM_WORKERS = 4
 CHUNK_SIZE_MB = 5
 LOG_FILE = 'download_manager.log'
+TIMEOUT = 5
 
 def configure_logging() -> logging.Logger:
     logger = logging.getLogger('download_manager')
@@ -20,6 +21,22 @@ def configure_logging() -> logging.Logger:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
+
+def log_retry_attempt(retry_state):
+    logger = logging.getLogger('download_manager')
+    if retry_state.outcome:
+        exc = retry_state.outcome.exception()
+        exc = repr(exc) if not str(exc) else str(exc)
+        worker_id = retry_state.args[5] if len(retry_state.args) > 5 else None
+        l, r = (retry_state.args[3], retry_state.args[4]) if len(retry_state.args) > 4 else None
+        context_info = ''
+        if worker_id is not None and (l,r) is not None:
+            context_info = f' for worker {worker_id} on task range {l}-{r}'
+        logger.warning(
+            f'Retrying {retry_state.fn.__name__}{context_info} '
+            f'(attempt {retry_state.attempt_number}) due to: {exc}. '
+            f'Waiting {retry_state.next_action.sleep:.2f} s.'
+        )
 
 class DownloadManager:
     def __init__(
@@ -40,6 +57,7 @@ class DownloadManager:
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, exp_base=2, min=1, max=20),
         retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+        before_sleep=log_retry_attempt,
         reraise=True
     )
     async def _get_content_headers(self, session: aiohttp.ClientSession, url: str):
@@ -53,7 +71,7 @@ class DownloadManager:
             if r.status == 200:
                 return r.headers
             else:
-                raise Exception(f'HEAD request to \'{url}\' failed with status code {r.status}.')
+                raise Exception(f'HEAD request to \'{url}\' failed with status code {r.status}')
 
     @staticmethod
     def _get_filename(url: str, headers):
@@ -79,9 +97,10 @@ class DownloadManager:
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, exp_base=2, min=1, max=20),
         retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+        before_sleep=log_retry_attempt,
         reraise=True
     )
-    async def _get_bytes(self, session: aiohttp.ClientSession, url: str, l: int, r: int):
+    async def _get_bytes(self, session: aiohttp.ClientSession, url: str, l: int, r: int, worker_id: int):
         headers = {
             'Range': f'bytes={l}-{r}',
             'Accept-Encoding': 'identity'
@@ -93,9 +112,7 @@ class DownloadManager:
             if resp.status == 206:
                 return await resp.read()
             else:
-                # self.logger.debug(f'Error: URL {url} with status code {resp.status}.')
-                # return b""
-                raise Exception(f'GET request to \'{url}\', range {l}-{r} failed with status code {resp.status}.')
+                raise Exception(f'GET request to \'{url}\', range {l}-{r} failed with status code {resp.status}')
 
     async def get_file_info(self, session: aiohttp.ClientSession):
         content_headers = await self._get_content_headers(session, self.url)
@@ -116,8 +133,8 @@ class DownloadManager:
             self.queue.put_nowait((l, file_size-1))
 
     # consumer
-    async def download_chunk(self, session: aiohttp.ClientSession, start: int, end: int):
-        data = await self._get_bytes(session, self.url, start, end)
+    async def download_chunk(self, session: aiohttp.ClientSession, start: int, end: int, worker_id: int):
+        data = await self._get_bytes(session, self.url, start, end, worker_id)
         # synchronous (blocking) file i/o operations. use aiofiles if this causes bottleneck
         self.file.seek(start)
         self.file.write(data)
@@ -129,7 +146,7 @@ class DownloadManager:
             try:
                 self.logger.info(f'Worker {worker_id} fetched task range {r[0]}-{r[1]} successfully.')
                 self.logger.info(f'Worker {worker_id} attempting task range {r[0]}-{r[1]}...')
-                await self.download_chunk(session, r[0], r[1])
+                await self.download_chunk(session, r[0], r[1], worker_id)
                 self.progress.advance(task_id, advance=r[1]-r[0]+1)
                 self.logger.info(f'Worker {worker_id} completed task range {r[0]}-{r[1]} successfully.')
             except Exception as e:
@@ -147,7 +164,8 @@ class DownloadManager:
                 TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                 TimeRemainingColumn()
         ) as self.progress:
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 content_length, filename, accept_ranges = await self.get_file_info(session)
                 download_task = self.progress.add_task(f"[red]Downloading from {self.url} ", total=content_length)
                 if not accept_ranges:
