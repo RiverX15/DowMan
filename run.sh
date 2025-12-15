@@ -1,14 +1,13 @@
 #!/usr/bin/zsh
 
-set -e
-
 SERVER="server.py"
 DOWNLOADER="download_manager.py"
 VALIDATOR="verify_download.py"
 
 clean_files() {
-  echo "Deleting logs and downloads..."
-  rm -f *.log downloaded_file*
+  echo "Deleting logs, downloads and jsons..."
+  rm -f *.log
+  rm -f downloaded_file*
   echo "Done."
 }
 

@@ -44,6 +44,7 @@ async def handle_download(request):
     if failure_mode == 'http_error':
         logger.info(f'Simulating HTTP error for request range {request.headers.get('Range', 'HEAD request')}')
         return web.Response(status=500, reason="Internal Server Error")
+    logger.info(f'Serving request range {request.headers.get('Range', 'HEAD request')}')
     return web.FileResponse(FILE_PATH)
 
 async def handle_download_without_ranges(request):
