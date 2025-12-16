@@ -13,7 +13,7 @@ URL = 'http://localhost:8080'
 NUM_WORKERS = 4
 CHUNK_SIZE_MB = 5
 LOG_FILE = 'download_manager.log'
-TIMEOUT = 5
+TIMEOUT_S = 5.0
 
 def configure_logging() -> logging.Logger:
     logger = logging.getLogger('download_manager')
@@ -30,7 +30,7 @@ def log_retry_attempt(retry_state):
         exc = retry_state.outcome.exception()
         exc = repr(exc) if not str(exc) else str(exc)
         worker_id = retry_state.args[5] if len(retry_state.args) > 5 else None
-        l, r = (retry_state.args[3], retry_state.args[4]) if len(retry_state.args) > 4 else None
+        l, r = (retry_state.args[3], retry_state.args[4]) if len(retry_state.args) > 4 else (None, None)
         context_info = ''
         if worker_id is not None and (l,r) is not None:
             context_info = f' for worker {worker_id} on task range {l}-{r}'
@@ -72,11 +72,8 @@ class DownloadManager:
         # tenacity will catch aiohttp.ClientError, asyncio.TimeoutError here
         async with session.head(url, headers=headers) as r:
             self.logger.debug(f'Response to HEAD request: {r}')
-            # r.raise_for_status()
-            if r.status == 200:
-                return r.headers
-            else:
-                raise Exception(f'HEAD request to \'{url}\' failed with status code {r.status}')
+            r.raise_for_status()
+            return r.headers
 
     @staticmethod
     def _get_filename(url: str, headers):
@@ -176,7 +173,7 @@ class DownloadManager:
                 TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                 TimeRemainingColumn()
         ) as self.progress:
-            timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+            timeout = aiohttp.ClientTimeout(total=TIMEOUT_S)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 content_length, self.filename, accept_ranges = await self.get_file_info(session)
                 state_exists = True
@@ -203,6 +200,7 @@ class DownloadManager:
                             data = await resp.read()
                             self.file.write(data)
                     return
+                # regular file handling will not work since we need to create file if not exists, open it and then write to it
                 flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_BINARY', 0)
                 fd = os.open(self.filename, flags)
                 with os.fdopen(fd, 'rb+') as self.file:
@@ -229,7 +227,7 @@ if __name__ == '__main__':
         logger.info("Download cancelled by user. Saving state...")
         with open(f"{manager.filename}.json", "w") as f:
             json.dump(manager.download_state, f)
-    # except Exception as e:
-    #     logger.error(f'An unhandled exception occurred: {e}')
+    except Exception as e:
+        logger.error(f'An unhandled exception occurred: {e}')
     finally:
         logger.info(f'Time taken: {time.perf_counter() - start:.2f} s')

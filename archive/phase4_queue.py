@@ -1,4 +1,4 @@
-# ai generated, for learning purposes
+# ai generated
 
 import asyncio
 import random

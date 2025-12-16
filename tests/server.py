@@ -7,9 +7,10 @@ import time
 
 
 FILE_PATH = 'test_file.bin'
-ARTIFICIAL_DELAY = 5.0
+ARTIFICIAL_DELAY_LOW_S = 0.2
+ARTIFICIAL_DELAY_HIGH_S = 2.0
 LOG_FILE = 'server.log'
-TIMEOUT = 10
+ARTIFICIAL_TIMEOUT_S = 10.0
 
 def configure_logging() -> logging.Logger:
     logger = logging.getLogger('server')
@@ -30,17 +31,17 @@ async def on_cleanup(app):
 async def handle_download(request):
     logger.debug(f"Request received to server with range support: {request.headers.get('Range', 'HEAD request')}")
     # failure simulation
-    failure_mode = random.choice(['timeout', 'connection_reset', 'http_error', 'none', 'none', 'none'])
+    failure_mode = random.choice(['timeout', 'connection_reset', 'http_error', *['none' for _ in range(7)]])
     if failure_mode == 'timeout':
         logger.info(f'Simulating timeout for request range {request.headers.get('Range', 'HEAD request')}')
-        await asyncio.sleep(TIMEOUT)
+        await asyncio.sleep(ARTIFICIAL_TIMEOUT_S)
         return web.Response(status=500, reason='Simulated Timeout')
     elif failure_mode == 'connection_reset':
         logger.info(f'Simulating connection reset for request range {request.headers.get('Range', 'HEAD request')}')
         if request.transport:
             request.transport.close()
         return web.Response(status=500)
-    await asyncio.sleep(random.uniform(0.5, 5.0))
+    await asyncio.sleep(random.uniform(ARTIFICIAL_DELAY_LOW_S, ARTIFICIAL_DELAY_HIGH_S))
     if failure_mode == 'http_error':
         logger.info(f'Simulating HTTP error for request range {request.headers.get('Range', 'HEAD request')}')
         return web.Response(status=500, reason="Internal Server Error")
