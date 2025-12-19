@@ -7,11 +7,11 @@ DOWNLOADED_FILE_PATH = 'downloaded_file.bin'
 CHUNK_SIZE_MB = 5
 CHUNK_SIZE = CHUNK_SIZE_MB * 1024 * 1024
 
+
 def compare_files_chunks(path1, path2, chunk_size=CHUNK_SIZE):
     if os.path.getsize(path1) != os.path.getsize(path2):
-        print(
-            f"Files differ in size: {path1} ({os.path.getsize(path1)} bytes) vs {path2} ({os.path.getsize(path2)} bytes)")
-        return
+        print(f"Files differ in size: {path1} ({os.path.getsize(path1)} bytes) vs {path2} ({os.path.getsize(path2)} bytes)")
+        return False
     mismatches = []
     with open(path1, 'rb') as f1, open(path2, 'rb') as f2:
         offset = 0

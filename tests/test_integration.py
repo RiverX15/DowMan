@@ -8,8 +8,9 @@ import signal
 
 SERVER_SCRIPT = "server.py"
 DOWNLOADER_SCRIPT = "../download_manager.py"
-VALIDATOR_SCRIPT = "verify_download.py"
+VALIDATOR_SCRIPT = "verify_download_integrity.py"
 DOWNLOADED_FILE = "downloaded_file.bin"
+
 
 @pytest.fixture(scope="function")
 def clean_environment():
@@ -19,7 +20,7 @@ def clean_environment():
 
 def _clean():
     for f in os.listdir('.'):
-        if f.endswith('.log') or f.startswith('downloaded_file') or f.endswith('.json'):
+        if f.endswith('.log') or f.endswith('.json') or f.endswith('.bin'):
             try:
                 os.remove(f)
             except OSError:
@@ -27,7 +28,6 @@ def _clean():
 
 @pytest.fixture(scope="function")
 def server_process():
-    print("Starting server fixture...")
     process = subprocess.Popen(
         [sys.executable, SERVER_SCRIPT],
         stdout=subprocess.PIPE,
@@ -35,7 +35,30 @@ def server_process():
     )
     time.sleep(2)
     yield process
-    print("Terminating server fixture...")
+    process.terminate()
+    process.wait()
+
+@pytest.fixture(scope="function")
+def server_process_no_range():
+    process = subprocess.Popen(
+        [sys.executable, SERVER_SCRIPT, "--no-range"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    time.sleep(2)
+    yield process
+    process.terminate()
+    process.wait()
+
+@pytest.fixture(scope="function")
+def server_process_corrupt_sector():
+    process = subprocess.Popen(
+        [sys.executable, SERVER_SCRIPT, "--corrupt"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    time.sleep(2)
+    yield process
     process.terminate()
     process.wait()
 
@@ -45,10 +68,10 @@ def run_validator():
 
 def test_normal_download(clean_environment, server_process):
     result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT], check=True)
-    assert result.returncode == 0, "Downloader script failed"
-    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found"
-    assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed"
-    assert run_validator(), "File integrity verification failed"
+    assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
+    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
+    assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed after download"
+    assert run_validator(), "Downloaded file integrity verification failed"
 
 def test_interrupted_download(clean_environment, server_process):
     downloader = subprocess.Popen([sys.executable, DOWNLOADER_SCRIPT])
@@ -58,7 +81,36 @@ def test_interrupted_download(clean_environment, server_process):
         downloader.wait(timeout=5)
     except subprocess.TimeoutExpired:
         downloader.kill()
+    assert downloader.returncode == 130, f"Downloader script interrupted but exited with status {downloader.returncode}"
+    assert os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not present after interrupted download"
     result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT], check=True)
-    assert result.returncode == 0, "Downloader script failed"
-    assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed"
-    assert run_validator(), "File integrity verification failed after resume"
+    assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
+    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
+    assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed after download"
+    assert run_validator(), "Downloaded file integrity verification failed"
+
+def test_no_range_download(clean_environment, server_process_no_range):
+    result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT], check=True)
+    assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
+    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
+    assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file present after complete sequential download"
+    assert run_validator(), "Downloaded file integrity verification failed"
+
+def test_killed_download(clean_environment, server_process):
+    downloader = subprocess.Popen([sys.executable, DOWNLOADER_SCRIPT])
+    time.sleep(6)
+    downloader.kill()
+    downloader.wait()
+    assert os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not found after hard kill"
+    result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT], check=True)
+    assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
+    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
+    assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed after download"
+    assert run_validator(), "Downloaded file integrity verification failed"
+
+def test_corrupt_sector_download(clean_environment, server_process_corrupt_sector):
+    result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT])
+    assert result.returncode == 1, f"Downloader script exited with status {result.returncode}"
+    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
+    assert os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not present after corrupted sector download"
+    assert not run_validator(), "Downloaded file integrity verification successful for corrupted sector"

@@ -7,6 +7,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import logging
 import json
 import os
+import sys
 
 
 URL = 'http://localhost:8080'
@@ -14,6 +15,9 @@ NUM_WORKERS = 4
 CHUNK_SIZE_MB = 5
 LOG_FILE = 'download_manager.log'
 TIMEOUT_S = 5.0
+STATE_SAVE_INTERVAL_CHUNKS = 5
+MAX_REQUEUE_LIMIT = 2
+
 
 def configure_logging() -> logging.Logger:
     logger = logging.getLogger('download_manager')
@@ -57,6 +61,7 @@ class DownloadManager:
         self.download_state = None
         self.download_task = None
         self.filename = None
+        self.has_dropped_chunks = False
 
     @retry(
         stop=stop_after_attempt(5),
@@ -95,6 +100,47 @@ class DownloadManager:
         # if everything fails
         return "downloaded_file.bin"
 
+    def load_state(self):
+        try:
+            with open(f"{self.filename}.json", "r") as f:
+                state = json.load(f)
+                if state.get('url') != self.url:
+                    logger.warning('State file for given url not found. Downloading file from scratch.')
+                    raise FileNotFoundError
+                else:
+                    if not os.path.exists(self.filename):
+                        logger.warning('State file found but downloaded file missing. Restarting download.')
+                        raise FileNotFoundError
+                    else:
+                        logger.info(f'Resuming file download.')
+                        return state
+        except FileNotFoundError:
+            # state_exists = False
+            state = dict()
+            state['url'] = self.url
+            state['chunk_size'] = self.chunk_size
+            state['completed_ranges'] = []
+            return state
+
+    def save_state(self):
+        # check needed to ensure filename is not None when saving state
+        if self.filename:
+            with open(f'{self.filename}.json', 'w') as f:
+                json.dump(self.download_state, f)
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1, exp_base=2, min=1, max=20),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+        before_sleep=log_retry_attempt,
+        reraise=True
+    )
+    async def download_sequentially(self, session: aiohttp.ClientSession):
+        async with session.get(self.url) as resp:
+            resp.raise_for_status()
+            data = await resp.read()
+            self.file.write(data)
+
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, exp_base=2, min=1, max=20),
@@ -110,11 +156,8 @@ class DownloadManager:
         # tenacity will catch aiohttp.ClientError, asyncio.TimeoutError here
         async with session.get(url, headers=headers) as resp:
             self.logger.debug(f'Response to GET request: {resp}')
-            # resp.raise_for_status()
-            if resp.status == 206:
-                return await resp.read()
-            else:
-                raise Exception(f'GET request to \'{url}\', range {l}-{r} failed with status code {resp.status}')
+            resp.raise_for_status()
+            return await resp.read()
 
     async def get_file_info(self, session: aiohttp.ClientSession):
         content_headers = await self._get_content_headers(session, self.url)
@@ -133,12 +176,12 @@ class DownloadManager:
         l,r = 0,self.chunk_size-1
         for _ in range(int(num_parts)):
             if (l,r) not in completed_ranges:
-                self.queue.put_nowait((l,r))
+                self.queue.put_nowait({'range': (l, r), 'requeue_count': 0})
             l+=self.chunk_size
             r+=self.chunk_size
         if l<file_size-1:
             if (l, file_size-1) not in completed_ranges:
-                self.queue.put_nowait((l, file_size-1))
+                self.queue.put_nowait({'range': (l, file_size - 1), 'requeue_count': 0})
 
     # consumer
     async def download_chunk(self, session: aiohttp.ClientSession, start: int, end: int, worker_id: int):
@@ -147,20 +190,28 @@ class DownloadManager:
         self.file.seek(start)
         self.file.write(data)
         self.download_state['completed_ranges'].append([start, end])
+        if not len(self.download_state['completed_ranges']) % STATE_SAVE_INTERVAL_CHUNKS:
+            self.save_state()
 
     async def worker(self, session: aiohttp.ClientSession, worker_id: int, task_id: int):
         while True:
-            r = await self.queue.get()
+            job = await self.queue.get()
+            r = job.get('range')
+            requeue_count = job.get('requeue_count')
             try:
                 self.logger.info(f'Worker {worker_id} fetched task successfully.')
                 self.logger.debug(f'Worker {worker_id} fetched task range {r[0]}-{r[1]} successfully.')
-                self.logger.debug(f'Worker {worker_id} attempting task range {r[0]}-{r[1]}...')
+                self.logger.debug(f'Worker {worker_id} attempting task range {r[0]}-{r[1]}.')
                 await self.download_chunk(session, r[0], r[1], worker_id)
                 self.progress.advance(task_id, advance=r[1]-r[0]+1)
                 self.logger.debug(f'Worker {worker_id} completed task range {r[0]}-{r[1]} successfully.')
             except Exception as e:
-                self.logger.error(f'Worker {worker_id} failed on task range {r[0]}-{r[1]}: {e}. Re-queueing...')
-                self.queue.put_nowait(r)
+                if requeue_count > MAX_REQUEUE_LIMIT:
+                    self.logger.critical(f'Task range {r[0]}-{r[1]} exceeded maximum re-queue limit of {MAX_REQUEUE_LIMIT}. Dropping chunk.')
+                    self.has_dropped_chunks = True
+                else:
+                    self.logger.error(f'Worker {worker_id} failed on task range {r[0]}-{r[1]}: {e}. Re-queueing.')
+                    self.queue.put_nowait({'range': r, 'requeue_count': requeue_count+1})
             finally:
                 self.queue.task_done()
                 self.logger.info(f'Worker {worker_id} free.')
@@ -176,29 +227,12 @@ class DownloadManager:
             timeout = aiohttp.ClientTimeout(total=TIMEOUT_S)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 content_length, self.filename, accept_ranges = await self.get_file_info(session)
-                state_exists = True
-                try:
-                    with open(f"{self.filename}.json", "r") as f:
-                        state = json.load(f)
-                        if state.get('url') != self.url:
-                            raise FileNotFoundError
-                        else:
-                            logger.info(f'Resuming file download...')
-                            self.download_state = state
-                except FileNotFoundError:
-                    state_exists = False
-                    self.download_state = dict()
-                    self.download_state['url'] = self.url
-                    self.download_state['chunk_size'] = self.chunk_size
-                    self.download_state['completed_ranges'] = []
+                self.download_state = self.load_state()
                 self.download_task = self.progress.add_task(f"[red]Downloading file ", total=content_length)
                 if not accept_ranges:
                     self.logger.warning(f'Server does not support range requests. Downloading sequentially.')
                     with open(self.filename, 'wb') as self.file:
-                        async with session.get(self.url) as resp:
-                            resp.raise_for_status()
-                            data = await resp.read()
-                            self.file.write(data)
+                        await self.download_sequentially(session)
                     return
                 # regular file handling will not work since we need to create file if not exists, open it and then write to it
                 flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_BINARY', 0)
@@ -213,8 +247,15 @@ class DownloadManager:
                     # cancel all workers
                     for w in workers:
                         w.cancel()
-                if state_exists:
-                    os.remove(f"{self.filename}.json")
+                if self.has_dropped_chunks:
+                    self.logger.error("Download finished with some chunks dropped.")
+                    raise Exception("Download incomplete due to dropped chunks.")
+                self.logger.info("Download finished.")
+                if os.path.exists(f'{self.filename}.json'):
+                    with open(f'{self.filename}.json', 'r') as f:
+                        state = json.load(f)
+                        if state.get('url') == self.url:
+                            os.remove(f'{self.filename}.json')
 
 if __name__ == '__main__':
     logger = configure_logging()
@@ -224,10 +265,11 @@ if __name__ == '__main__':
         asyncio.run(manager.start())
     # keyboard interrupt not caught by exception, needs to be handled explicitly
     except KeyboardInterrupt:
-        logger.info("Download cancelled by user. Saving state...")
-        with open(f"{manager.filename}.json", "w") as f:
-            json.dump(manager.download_state, f)
+        logger.info("Download cancelled by user. Saving state.")
+        manager.save_state()
+        sys.exit(130)
     except Exception as e:
         logger.error(f'An unhandled exception occurred: {e}')
+        sys.exit(1)
     finally:
         logger.info(f'Time taken: {time.perf_counter() - start:.2f} s')
