@@ -2,7 +2,7 @@
 # Network Settings
 max_concurrent = 4
 chunk_size_mb = 5
-timeout_seconds = 5.0
+timeout_seconds = 60.0
 
 [resilience]
 max_retries = 5

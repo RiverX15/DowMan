@@ -5,7 +5,7 @@ chunk_size_mb = 0.5
 timeout_seconds = 0.15
 
 [resilience]
-max_retries = 5
+max_retries = 3
 exp_backoff_multiplier = 0.1
 exp_backoff_base = 2
 exp_backoff_min = 0.01

@@ -4,12 +4,13 @@ import sys
 import time
 import os
 import signal
+import hashlib
 
 
 SERVER_SCRIPT = "server.py"
 DOWNLOADER_SCRIPT = "../download_manager.py"
-VALIDATOR_SCRIPT = "verify_download_integrity.py"
 DOWNLOADED_FILE = "downloaded_file.bin"
+SOURCE_FILE = "test_file.bin"
 
 
 @pytest.fixture(scope="function")
@@ -62,23 +63,24 @@ def server_process_corrupt_sector():
     process.terminate()
     process.wait()
 
-def run_validator():
-    result = subprocess.run([sys.executable, VALIDATOR_SCRIPT], capture_output=True)
-    return result.returncode == 0
+def calculate_shasum(file_path, algo='sha256'):
+    with open(file_path, 'rb') as f:
+        digest = hashlib.file_digest(f, algo)
+    return digest.hexdigest()
 
 def test_normal_download(clean_environment, server_process):
     result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"], check=True)
     assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
     assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
     assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed after download"
-    assert run_validator(), "Downloaded file integrity verification failed"
+    assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
 
 def test_interrupted_download(clean_environment, server_process):
     downloader = subprocess.Popen([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"])
-    time.sleep(0.5)
+    time.sleep(0.3)
     downloader.send_signal(signal.SIGINT)
     try:
-        downloader.wait(timeout=1)
+        downloader.wait(timeout=0.5)
     except subprocess.TimeoutExpired:
         downloader.kill()
     assert downloader.returncode == 130, f"Downloader script interrupted but exited with status {downloader.returncode}"
@@ -87,14 +89,14 @@ def test_interrupted_download(clean_environment, server_process):
     assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
     assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
     assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed after download"
-    assert run_validator(), "Downloaded file integrity verification failed"
+    assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
 
 def test_no_range_download(clean_environment, server_process_no_range):
     result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"], check=True)
     assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
     assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
     assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file present after complete sequential download"
-    assert run_validator(), "Downloaded file integrity verification failed"
+    assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
 
 def test_killed_download(clean_environment, server_process):
     downloader = subprocess.Popen([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"])
@@ -106,11 +108,11 @@ def test_killed_download(clean_environment, server_process):
     assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
     assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
     assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed after download"
-    assert run_validator(), "Downloaded file integrity verification failed"
+    assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
 
 def test_corrupt_sector_download(clean_environment, server_process_corrupt_sector):
     result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"])
     assert result.returncode == 1, f"Downloader script exited with status {result.returncode}"
     assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
     assert os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not present after corrupted sector download"
-    assert not run_validator(), "Downloaded file integrity verification successful for corrupted sector"
+    assert not calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification successful for corrupted sector"
