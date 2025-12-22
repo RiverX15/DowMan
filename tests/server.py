@@ -5,6 +5,7 @@ import random
 import logging
 import time
 import sys
+import tomllib
 
 
 FILE_PATH = 'test_file.bin'
@@ -37,7 +38,7 @@ async def on_startup(app):
     app['start_time'] = time.perf_counter()
     file_size = os.path.getsize(FILE_PATH)
     app['l'] = random.randint(0, file_size)
-    app['r'] = min(app['l']+18*1024*1024, file_size)
+    app['r'] = min(app['l']+3.5*1024*1024, file_size)
     logger.info('Server is starting up.')
 
 async def on_cleanup(app):
@@ -91,6 +92,16 @@ async def handle_download_corrupted_sector(request):
     logger.info(f'Serving request range {request.headers.get('Range', 'HEAD request')}')
     return web.FileResponse(FILE_PATH)
 
+if '--fast' in sys.argv:
+    with open('config_test.toml', 'rb') as f:
+        test_config = tomllib.load(f)
+        server_conf = test_config['server']
+    ARTIFICIAL_TIMEOUT_S = server_conf['artificial_timeout_seconds']
+    ARTIFICIAL_DELAY_LOW_S = server_conf['artificial_delay_min_seconds']
+    ARTIFICIAL_DELAY_HIGH_S = server_conf['artificial_delay_max_seconds']
+    CHUNK_SIZE_MB = server_conf['chunk_size_mb']
+    CHUNK_SIZE = CHUNK_SIZE_MB*1024*1024
+
 app = web.Application()
 if '--no-range' in sys.argv:
     handler = handle_download_without_ranges
@@ -105,6 +116,6 @@ app.on_cleanup.append(on_cleanup)
 if __name__ == '__main__':
     logger = configure_logging()
     if not os.path.exists(FILE_PATH):
-        create_random_binary_file(FILE_PATH, 573)
-    logger.info(f"Serving {FILE_PATH} in {'NO-RANGE' if '--no-range' in sys.argv else 'RANGE'} mode.")
+        create_random_binary_file(FILE_PATH, 10)
+    logger.info(f"Serving {FILE_PATH} in {'NO-RANGE' if '--no-range' in sys.argv else 'RANGE'} mode with {'FAST' if '--fast' in sys.argv else 'NORMAL'} configuration.")
     web.run_app(app, port=8080)

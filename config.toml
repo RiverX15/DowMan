@@ -1,0 +1,14 @@
+[downloader]
+# Network Settings
+max_concurrent = 4
+chunk_size_mb = 5
+timeout_seconds = 5.0
+
+[resilience]
+max_retries = 5
+exp_backoff_multiplier = 1
+exp_backoff_base = 2
+exp_backoff_min = 1
+exp_backoff_max = 100
+max_requeue_limit = 3
+state_save_interval_chunks = 5
