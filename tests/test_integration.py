@@ -77,7 +77,7 @@ def test_normal_download(clean_environment, server_process):
 
 def test_interrupted_download(clean_environment, server_process):
     downloader = subprocess.Popen([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"])
-    time.sleep(0.3)
+    time.sleep(0.4)
     downloader.send_signal(signal.SIGINT)
     try:
         downloader.wait(timeout=0.5)
