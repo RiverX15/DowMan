@@ -12,12 +12,27 @@ import tomllib
 import argparse
 
 
+class DummyProgress:
+    """A dummy progress bar that does nothing, only for benchmarking."""
+    def __init__(self):
+        pass
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+    def add_task(self, *args, **kwargs):
+        return 0
+    def advance(self, *args, **kwargs):
+        pass
+
+
 class DownloadManager:
 
     def __init__(
             self,
             url: str,
-            config: dict
+            config: dict,
+            benchmark_mode: bool = False,
     ):
         """Initialize the downloader."""
         self.url = url
@@ -31,8 +46,10 @@ class DownloadManager:
         self.exp_backoff_max = config['resilience']['exp_backoff_max']
         self.max_requeue_limit = config['resilience']['max_requeue_limit']
         self.state_save_interval_chunks = config['resilience']['state_save_interval_chunks']    # interval for saving chunks
+        self.benchmark_mode = benchmark_mode
         self.queue = asyncio.Queue()
-        self.file = None    # target file object
+        self.file = None    # writer for sequential download
+        self.fd = None
         self.progress = None
         self.logger = logging.getLogger('download_manager')
         self.download_state = None  # state object for JSON state file
@@ -42,13 +59,15 @@ class DownloadManager:
 
     async def start(self):
         """Entry point."""
-        with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                TimeRemainingColumn()
-        ) as self.progress:
+        # set progress class based on benchmark mode
+        progress_ctx = DummyProgress() if self.benchmark_mode else Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn()
+        )
+        with progress_ctx as self.progress:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 content_length, self.filename, accept_ranges = await self._get_file_info(session)
@@ -61,8 +80,8 @@ class DownloadManager:
                     return
                 # regular file handling will not work since we need to create file if not exists, open it and then write to it
                 flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_BINARY', 0)
-                fd = os.open(self.filename, flags)
-                with os.fdopen(fd, 'rb+') as self.file:
+                self.fd = os.open(self.filename, flags)
+                with os.fdopen(self.fd, 'rb+') as self.file:
                     # start consumers
                     workers = [asyncio.create_task(self._worker(session, i, self.download_task)) for i in range(self.max_concurrent)]
                     # start producers
@@ -76,17 +95,18 @@ class DownloadManager:
                     self.logger.error("Download finished with some chunks dropped.")
                     raise Exception("Download incomplete due to dropped chunks.")
                 self.logger.info("Download finished.")
-                if os.path.exists(f'{self.filename}.json'):
-                    with open(f'{self.filename}.json', 'r') as f:
+                if os.path.exists(f'{self.filename}.dowman'):
+                    with open(f'{self.filename}.dowman', 'r') as f:
                         state = json.load(f)
                         if state.get('url') == self.url:
-                            os.remove(f'{self.filename}.json')
+                            os.remove(f'{self.filename}.dowman')
 
     def save_state(self):
         """Save download state to JSON."""
         # check needed to ensure filename is not None when saving state
         if self.filename:
-            with open(f'{self.filename}.json', 'w') as f:
+            with open(f'{self.filename}.dowman', 'w') as f:
+                # synchronous (blocking) operation. offload if this causes bottleneck.
                 json.dump(self.download_state, f)
 
     @staticmethod
@@ -114,9 +134,9 @@ class DownloadManager:
             }
 
     @staticmethod
-    def configure_logging() -> logging.Logger:
+    def configure_logging(benchmark_mode: bool = False) -> logging.Logger:
         logger = logging.getLogger('download_manager')
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.CRITICAL if benchmark_mode else logging.INFO)
         handler = logging.FileHandler('download_manager.log')
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
@@ -198,9 +218,11 @@ class DownloadManager:
     async def _download_chunk(self, session: aiohttp.ClientSession, start: int, end: int, worker_id: int):
         """Download specified chunk from URL and write it to disk."""
         data = await self._get_bytes(session, start, end, worker_id)
-        # synchronous (blocking) file i/o operations. use aiofiles if this causes bottleneck
-        self.file.seek(start)
-        self.file.write(data)
+        # # synchronous (blocking) file i/o operations. use aiofiles if this causes bottleneck
+        # self.file.seek(start)
+        # self.file.write(data)
+        # linux specific best way to write at offset without seeking
+        await asyncio.to_thread(os.pwrite, self.fd, data, start)
         self.download_state['completed_ranges'].append([start, end])
         if not len(self.download_state['completed_ranges']) % self.state_save_interval_chunks:
             self.save_state()
@@ -218,8 +240,10 @@ class DownloadManager:
             resp.raise_for_status()
             # write to disk in chunks to avoid OOM
             async for data in resp.content.iter_chunked(self.chunk_size):
-                # synchronous (blocking) file i/o operations. use aiofiles if this causes bottleneck
-                self.file.write(data)
+                # # synchronous (blocking) file i/o operations. use aiofiles if this causes bottleneck
+                # self.file.write(data)
+                # offload write to threads. no use of having os.pwrite here
+                await asyncio.to_thread(self.file.write, data)
                 self.progress.advance(self.download_task, advance=len(data))
 
     async def _get_file_info(self, session: aiohttp.ClientSession):
@@ -291,7 +315,7 @@ class DownloadManager:
     def _load_state(self):
         """Load download state from JSON."""
         try:
-            with open(f"{self.filename}.json", "r") as f:
+            with open(f"{self.filename}.dowman", "r") as f:
                 state = json.load(f)
                 if state.get('url') != self.url:
                     logger.warning('State file for given url not found. Downloading file from scratch.')
@@ -315,12 +339,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', type=str, default='http://localhost:8080', help='Target URL')
     parser.add_argument('--test', action='store_true', help='Use test configuration')
+    parser.add_argument('--benchmark', action='store_true', help='Disable UI and logging for benchmarking')
     args = parser.parse_args()
     config_path = 'config_test.toml' if args.test else 'config.toml'
-    logger = DownloadManager.configure_logging()
+    logger = DownloadManager.configure_logging(benchmark_mode=args.benchmark)
     config = DownloadManager.load_config(config_path)
     start = time.perf_counter()
-    manager = DownloadManager(url=args.url, config=config)
+    manager = DownloadManager(url=args.url, config=config, benchmark_mode=args.benchmark)
     try:
         logger.info(f"Starting downloader in {'TEST' if args.test else 'NORMAL'} mode.")
         asyncio.run(manager.start())
@@ -328,6 +353,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         logger.info("Download cancelled by user. Saving state.")
         manager.save_state()
+        print('Download paused. Re-run the command to resume download.')
         sys.exit(130)
     except Exception as e:
         print('Unable to download from the specified URL. Check the logfile [download_manager.log] for more information.')
