@@ -95,17 +95,17 @@ class DownloadManager:
                     self.logger.error("Download finished with some chunks dropped.")
                     raise Exception("Download incomplete due to dropped chunks.")
                 self.logger.info("Download finished.")
-                if os.path.exists(f'{self.filename}.json'):
-                    with open(f'{self.filename}.json', 'r') as f:
+                if os.path.exists(f'{self.filename}.dowman'):
+                    with open(f'{self.filename}.dowman', 'r') as f:
                         state = json.load(f)
                         if state.get('url') == self.url:
-                            os.remove(f'{self.filename}.json')
+                            os.remove(f'{self.filename}.dowman')
 
     def save_state(self):
         """Save download state to JSON."""
         # check needed to ensure filename is not None when saving state
         if self.filename:
-            with open(f'{self.filename}.json', 'w') as f:
+            with open(f'{self.filename}.dowman', 'w') as f:
                 # synchronous (blocking) operation. offload if this causes bottleneck.
                 json.dump(self.download_state, f)
 
@@ -315,7 +315,7 @@ class DownloadManager:
     def _load_state(self):
         """Load download state from JSON."""
         try:
-            with open(f"{self.filename}.json", "r") as f:
+            with open(f"{self.filename}.dowman", "r") as f:
                 state = json.load(f)
                 if state.get('url') != self.url:
                     logger.warning('State file for given url not found. Downloading file from scratch.')
@@ -353,6 +353,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         logger.info("Download cancelled by user. Saving state.")
         manager.save_state()
+        print('Download paused. Re-run the command to resume download.')
         sys.exit(130)
     except Exception as e:
         print('Unable to download from the specified URL. Check the logfile [download_manager.log] for more information.')

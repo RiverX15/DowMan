@@ -21,7 +21,7 @@ def clean_environment():
 
 def _clean():
     for f in os.listdir('.'):
-        if f.endswith('.log') or f.endswith('.json') or f.endswith('.bin'):
+        if f.endswith('.log') or f.endswith('.dowman') or f.endswith('.bin'):
             try:
                 os.remove(f)
             except OSError:
@@ -72,30 +72,30 @@ def test_normal_download(clean_environment, server_process):
     result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"], check=True)
     assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
     assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
-    assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed after download"
+    assert not os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not removed after download"
     assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
 
 def test_interrupted_download(clean_environment, server_process):
     downloader = subprocess.Popen([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"])
-    time.sleep(0.4)
+    time.sleep(0.35)
     downloader.send_signal(signal.SIGINT)
     try:
         downloader.wait(timeout=0.5)
     except subprocess.TimeoutExpired:
         downloader.kill()
     assert downloader.returncode == 130, f"Downloader script interrupted but exited with status {downloader.returncode}"
-    assert os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not present after interrupted download"
+    assert os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not present after interrupted download"
     result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"], check=True)
     assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
     assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
-    assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed after download"
+    assert not os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not removed after download"
     assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
 
 def test_no_range_download(clean_environment, server_process_no_range):
     result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"], check=True)
     assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
     assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
-    assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file present after complete sequential download"
+    assert not os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file present after complete sequential download"
     assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
 
 def test_killed_download(clean_environment, server_process):
@@ -103,16 +103,16 @@ def test_killed_download(clean_environment, server_process):
     time.sleep(0.5)
     downloader.kill()
     downloader.wait()
-    assert os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not found after hard kill"
+    assert os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not found after hard kill"
     result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"], check=True)
     assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
     assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
-    assert not os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not removed after download"
+    assert not os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not removed after download"
     assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
 
 def test_corrupt_sector_download(clean_environment, server_process_corrupt_sector):
     result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"])
     assert result.returncode == 1, f"Downloader script exited with status {result.returncode}"
     assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
-    assert os.path.exists(f'{DOWNLOADED_FILE}.json'), "JSON state file not present after corrupted sector download"
+    assert os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not present after corrupted sector download"
     assert not calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification successful for corrupted sector"
