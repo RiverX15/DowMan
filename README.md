@@ -76,8 +76,8 @@ uv run pytest
 
 ## ⚙️ Configuration
 
-You can fine-tune DowMan's behavior by modifying `config.toml`. For developers running tests, these parameters are 
-critical for simulating network conditions.
+You can fine-tune DowMan's behavior by modifying [`config.toml`](config.toml). For developers running tests, these
+parameters are critical for simulating network conditions.
 
 ### 🌐 Network & Performance
 Parameters that control how the downloader connects to the internet.
@@ -98,7 +98,8 @@ Controls how the downloader handles failures.
 | `state_save_interval_chunks` | `5`     | Save download progress to JSON every `N` completed chunks.                        |
 
 ### 🧪 Testing & Simulation (Dev Only)
-These parameters (found in `tests/config_test.toml`) are used to verify DowMan's stability under artificial chaos.
+These parameters (found in [`tests/config_test.toml`](tests/config_test.toml)) are used to verify DowMan's stability
+under artificial chaos.
 
 | Parameter                      | Default (Test) | Description                                                 |
 |:-------------------------------|:---------------|:------------------------------------------------------------|
@@ -106,10 +107,33 @@ These parameters (found in `tests/config_test.toml`) are used to verify DowMan's
 | `artificial_delay_max_seconds` | `0.06`         | Max random latency injected into the local test server.     |
 | `artificial_timeout_seconds`   | `0.3`          | Time after which the test server force-closes a connection. |
 
-> **⚠️ Note on Test Parameters:** The values in `tests/config_test.toml` and `tests/test_integration.py` are carefully
-> tuned to ensure the test runner can interrupt downloads deterministically. Significantly increasing `max_concurrent`
-> or `chunk_size_mb` may cause downloads to finish before the test script can trigger interruption scenarios, leading to
-> false failures.
+> **⚠️ Note on Test Parameters:** The values in [`tests/config_test.toml`](tests/config_test.toml) and
+> [`tests/test_integration.py`](tests/test_integration.py) are carefully tuned to ensure the test runner can interrupt
+> downloads deterministically. Significantly increasing `max_concurrent` or `chunk_size_mb` may cause downloads to
+> finish before the test script can trigger interruption scenarios, leading to false failures.
+
+---
+
+## 📊 Benchmarks
+
+Performance comparison against industry-standard download accelerators (`aria2`, `axel`) and standard tools (`curl`).
+
+**Test Environment:**
+* **Platform:** GitHub Codespaces (2-core vCPU, 8GB RAM)
+* **File:** 100MB Test File (`speedtest.tele2.net`)
+* **Concurrency:** 4 connections with each connection's disk buffer size of 5MB (where applicable)
+
+| Tool       | Language   | Mean Time [s] | Relative Time |
+|:-----------|:-----------|:--------------|:--------------|
+| **axel**   | C          | 53.93         | 1.00x         |
+| **DowMan** | **Python** | **54.70**     | **1.01x**     |
+| **aria2**  | C++        | 54.70         | 1.01x         |
+| **curl**   | C          | 202.35        | 3.75x         |
+
+> By leveraging `asyncio` and `aiohttp`, DowMan matches the download efficiency of `axel` or `aria2`, while significantly
+> outperforming standard single-threaded `curl`.
+> 
+> See [`BENCHMARK.md`](BENCHMARK.md) for raw test output.
 
 ---
 
