@@ -8,7 +8,7 @@ import hashlib
 
 
 SERVER_SCRIPT = "server.py"
-DOWNLOADER_SCRIPT = "../download_manager.py"
+DOWNLOADER_SCRIPT = os.path.join('..', 'download_manager.py')
 DOWNLOADED_FILE = "downloaded_file.bin"
 SOURCE_FILE = "test_file.bin"
 
