@@ -10,6 +10,7 @@ import os
 import sys
 import tomllib
 import argparse
+from urllib.parse import urlparse
 
 
 class DummyProgress:
@@ -56,6 +57,7 @@ class DownloadManager:
         self.download_task = None   # progress bar
         self.filename = None
         self.has_dropped_chunks = False # flag to check for dropped chunks
+        self.io_lock = asyncio.Lock()   # for pwrite simulation on Windows
 
     async def start(self):
         """Entry point."""
@@ -221,8 +223,13 @@ class DownloadManager:
         # # synchronous (blocking) file i/o operations. use aiofiles if this causes bottleneck
         # self.file.seek(start)
         # self.file.write(data)
-        # linux specific best way to write at offset without seeking
-        await asyncio.to_thread(os.pwrite, self.fd, data, start)
+        if hasattr(os, 'pwrite'):
+            # Linux: atomic positional writes
+            await asyncio.to_thread(os.pwrite, self.fd, data, start)
+        else:
+            # Windows: acquire lock manually then write
+            async with self.io_lock:
+                await asyncio.to_thread(self._windows_pwrite, data, start)
         self.download_state['completed_ranges'].append([start, end])
         if not len(self.download_state['completed_ranges']) % self.state_save_interval_chunks:
             self.save_state()
@@ -300,7 +307,7 @@ class DownloadManager:
             filename = content_disposition.split('filename=')[1].strip('"\'')
             return filename
         # if URL has file format specified
-        url_path = self.url.split('/')[-1]
+        url_path = urlparse(self.url).path.split('/')[-1]
         if '.' in url_path:
             return url_path
         # guess extension from `content-type`
@@ -333,6 +340,11 @@ class DownloadManager:
             state['chunk_size'] = self.chunk_size
             state['completed_ranges'] = []
             return state
+
+    def _windows_pwrite(self, data, offset):
+        """Simulate pwrite on Windows."""
+        os.lseek(self.fd, offset, os.SEEK_SET)
+        os.write(self.fd, data)
 
 
 if __name__ == '__main__':
