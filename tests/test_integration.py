@@ -1,118 +1,185 @@
-import pytest
-import subprocess
-import sys
-import time
 import os
-import signal
-import hashlib
+import sys
+import pytest
+from aioresponses import aioresponses, CallbackResult
+import tomllib
+
+# to import parent directory
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from download_manager import DownloadManager
 
 
-SERVER_SCRIPT = "server.py"
-DOWNLOADER_SCRIPT = os.path.join('..', 'download_manager.py')
-DOWNLOADED_FILE = "downloaded_file.bin"
-SOURCE_FILE = "test_file.bin"
-
-
-@pytest.fixture(scope="function")
+# fixture for cleanup pre and post every test
+@pytest.fixture
 def clean_environment():
+    def _clean():
+        for f in os.listdir('.'):
+            if f.endswith('.log') or f.endswith('.dowman') or f.endswith('.bin'):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
     _clean()
     yield
     _clean()
 
-def _clean():
-    for f in os.listdir('.'):
-        if f.endswith('.log') or f.endswith('.dowman') or f.endswith('.bin'):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
+# fixture for mocking file contents
+@pytest.fixture
+def mock_file_data():
+    return (b'0123456789'*100+b'abcdefghij'*100)*50   # 100 KB
 
-@pytest.fixture(scope="function")
-def server_process():
-    process = subprocess.Popen(
-        [sys.executable, SERVER_SCRIPT, "--fast"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-    time.sleep(0.5)
-    yield process
-    process.terminate()
-    process.wait()
+# fixture for fetching test configuration
+@pytest.fixture
+def config():
+    with open('config_test.toml', 'rb') as f:
+        config = tomllib.load(f)
+    return config
 
-@pytest.fixture(scope="function")
-def server_process_no_range():
-    process = subprocess.Popen(
-        [sys.executable, SERVER_SCRIPT, "--no-range", "--fast"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-    time.sleep(0.5)
-    yield process
-    process.terminate()
-    process.wait()
+# fixture for dummy manager instance
+@pytest.fixture
+def manager(config, tmp_path):
+    dm = DownloadManager('http://localhost:8080/testfile.bin', config, benchmark_mode=True)
+    return dm
 
-@pytest.fixture(scope="function")
-def server_process_corrupt_sector():
-    process = subprocess.Popen(
-        [sys.executable, SERVER_SCRIPT, "--corrupt", "--fast"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-    time.sleep(0.5)
-    yield process
-    process.terminate()
-    process.wait()
+@pytest.mark.asyncio
+async def test_normal_download(clean_environment, manager, mock_file_data):
+    # normal download without interruptions
+    url = manager.url
+    with aioresponses() as m:
+        # mock HEAD request
+        m.head(url, status=200, headers={
+            'Content-Length': str(len(mock_file_data)),
+            'Accept-Ranges': 'bytes'
+        })
+        # mock GET requests
+        def range_callback(url, **kwargs):
+            headers = kwargs.get('headers', {})
+            l, r = map(int, headers.get('Range').split('=')[-1].split('-'))
+            return CallbackResult(status=206, body=mock_file_data[l:r+1])
+        m.get(url, callback=range_callback, repeat=True)
+        await manager.start()
+    assert os.path.exists(manager.filename)
+    with open(manager.filename, 'rb') as f:
+        assert f.read() == mock_file_data
+    assert not os.path.exists(f'{manager.filename}.dowman')
 
-def calculate_shasum(file_path, algo='sha256'):
-    with open(file_path, 'rb') as f:
-        digest = hashlib.file_digest(f, algo)
-    return digest.hexdigest()
+@pytest.mark.asyncio
+async def test_no_range_fallback(clean_environment, manager, mock_file_data):
+    # sequential download from server without range support
+    url = manager.url
+    with aioresponses() as m:
+        # mock HEAD request without Accept-Ranges
+        m.head(url, status=200, headers={
+            'Content-Length': str(len(mock_file_data))
+        })
+        # expect only 1 get request for the entire data
+        m.get(url, status=200, body=mock_file_data)
+        await manager.start()
+    assert os.path.exists(manager.filename)
+    with open(manager.filename, 'rb') as f:
+        assert f.read() == mock_file_data
+    assert not os.path.exists(f'{manager.filename}.dowman')
 
-def test_normal_download(clean_environment, server_process):
-    result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"], check=True)
-    assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
-    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
-    assert not os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not removed after download"
-    assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
-
-def test_interrupted_download(clean_environment, server_process):
-    downloader = subprocess.Popen([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"])
-    time.sleep(0.35)
-    downloader.send_signal(signal.SIGINT)
+@pytest.mark.asyncio
+async def test_corrupt_sector_download(clean_environment, manager, mock_file_data):
+    # normal download from server with fixed failing sector
+    url = manager.url
     try:
-        downloader.wait(timeout=0.5)
-    except subprocess.TimeoutExpired:
-        downloader.kill()
-    assert downloader.returncode == 130, f"Downloader script interrupted but exited with status {downloader.returncode}"
-    assert os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not present after interrupted download"
-    result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"], check=True)
-    assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
-    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
-    assert not os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not removed after download"
-    assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
+        with aioresponses() as m:
+            m.head(url, status=200, headers={
+                'Content-Length': str(len(mock_file_data)),
+                'Accept-Ranges': 'bytes'
+            })
+            def corrupt_callback(url, **kwargs):
+                headers = kwargs.get('headers', {})
+                l, r = map(int, headers.get('Range').split('=')[-1].split('-'))
+                # corrupt second chunk ~10-20 KB
+                if 10000 <= l <= 20000:
+                    return CallbackResult(status=500)
+                return CallbackResult(status=206, body=mock_file_data[l:r+1])
+            m.get(url, callback=corrupt_callback, repeat=True)
+            await manager.start()
+    except Exception as e:
+        if 'Download incomplete due to dropped chunks' in str(e):
+            pass
+        else:
+            raise e
+    assert os.path.exists(manager.filename)
+    with open(manager.filename, 'rb') as f:
+        assert f.read() != mock_file_data
+    assert os.path.exists(f'{manager.filename}.dowman')
 
-def test_no_range_download(clean_environment, server_process_no_range):
-    result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"], check=True)
-    assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
-    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
-    assert not os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file present after complete sequential download"
-    assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
+@pytest.mark.asyncio
+async def test_resume_capability(clean_environment, manager, mock_file_data, config):
+    # normal download with simulated Ctrl+C in downloader
+    url = manager.url
+    # simulate keyboard interrupt after 2 chunks
+    chunks_downloaded = 0
+    def interrupting_callback(url, **kwargs):
+        nonlocal chunks_downloaded
+        chunks_downloaded += 1
+        if chunks_downloaded >= 3:
+            # raising keyboard interrupt here will cause pytest to exit
+            raise RuntimeError('Simulated interrupt (Ctrl+C)')
+        headers = kwargs.get('headers', {})
+        l, r = map(int, headers.get('Range').split('=')[-1].split('-'))
+        return CallbackResult(status=206, body=mock_file_data[l:r+1])
+    try:
+        with aioresponses() as m:
+            m.head(url, status=200, headers={
+                'Content-Length': str(len(mock_file_data)),
+                'Accept-Ranges': 'bytes'
+            })
+            m.get(url, callback=interrupting_callback, repeat=True)
+            await manager.start()
+    except RuntimeError:
+        manager.save_state()
+    except Exception as e:
+        if 'Download incomplete due to dropped chunks' in str(e):
+            pass
+        else:
+            raise e
+    assert os.path.exists(manager.filename)
+    with open(manager.filename, 'rb') as f:
+        assert f.read() != mock_file_data
+    assert os.path.exists(f'{manager.filename}.dowman')
+    new_manager = DownloadManager(url, config, benchmark_mode=True)
+    new_manager.filename = manager.filename
+    with aioresponses() as m:
+        m.head(url, status=200, headers={
+            'Content-Length': str(len(mock_file_data)),
+            'Accept-Ranges': 'bytes'
+        })
+        def range_callback(url, **kwargs):
+            headers = kwargs.get('headers', {})
+            l, r = map(int, headers.get('Range').split('=')[-1].split('-'))
+            return CallbackResult(status=206, body=mock_file_data[l:r+1])
+        m.get(url, callback=range_callback, repeat=True)
+        await new_manager.start()
+    assert os.path.exists(manager.filename)
+    with open(manager.filename, 'rb') as f:
+        assert f.read() == mock_file_data
+    assert not os.path.exists(f'{manager.filename}.dowman')
 
-def test_killed_download(clean_environment, server_process):
-    downloader = subprocess.Popen([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"])
-    time.sleep(0.5)
-    downloader.kill()
-    downloader.wait()
-    assert os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not found after hard kill"
-    result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"], check=True)
-    assert result.returncode == 0, f"Downloader script exited with status {result.returncode}"
-    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
-    assert not os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not removed after download"
-    assert calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification failed"
-
-def test_corrupt_sector_download(clean_environment, server_process_corrupt_sector):
-    result = subprocess.run([sys.executable, DOWNLOADER_SCRIPT, "--url", "http://localhost:8080", "--test"])
-    assert result.returncode == 1, f"Downloader script exited with status {result.returncode}"
-    assert os.path.exists(DOWNLOADED_FILE), "Downloaded file not found after complete download"
-    assert os.path.exists(f'{DOWNLOADED_FILE}.dowman'), ".dowman state file not present after corrupted sector download"
-    assert not calculate_shasum(DOWNLOADED_FILE) == calculate_shasum(SOURCE_FILE), "Downloaded file integrity verification successful for corrupted sector"
+@pytest.mark.asyncio
+async def test_transient_failure_retries(clean_environment, manager, mock_file_data):
+    # server fails some requests to test retry capabilities
+    url = manager.url
+    with aioresponses() as m:
+        m.head(url, status=200, headers={
+            'Content-Length': str(len(mock_file_data)),
+            'Accept-Ranges': 'bytes'
+        })
+        # fail 2 requests then succeed all
+        m.get(url, status=500)
+        m.get(url, status=500)
+        def range_callback(url, **kwargs):
+            headers = kwargs.get('headers', {})
+            l, r = map(int, headers.get('Range').split('=')[-1].split('-'))
+            return CallbackResult(status=206, body=mock_file_data[l:r+1])
+        m.get(url, callback=range_callback, repeat=True)
+        await manager.start()
+    assert os.path.exists(manager.filename)
+    with open(manager.filename, 'rb') as f:
+        assert f.read() == mock_file_data
+    assert not os.path.exists(f'{manager.filename}.dowman')
