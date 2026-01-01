@@ -97,16 +97,6 @@ Controls how the downloader handles failures.
 | `max_requeue_limit`          | `3`     | If a chunk fails all retries, it is put back in the queue this many times.        |
 | `state_save_interval_chunks` | `5`     | Save download progress to JSON every `N` completed chunks.                        |
 
-### 🧪 Testing & Simulation (Dev Only)
-These parameters (found in [`tests/config_test.toml`](tests/config_test.toml)) are used to verify DowMan's stability
-under artificial chaos.
-
-| Parameter                      | Default (Test) | Description                                                 |
-|:-------------------------------|:---------------|:------------------------------------------------------------|
-| `artificial_delay_min_seconds` | `0.04`         | Min random latency injected into the local test server.     |
-| `artificial_delay_max_seconds` | `0.06`         | Max random latency injected into the local test server.     |
-| `artificial_timeout_seconds`   | `0.3`          | Time after which the test server force-closes a connection. |
-
 ---
 
 ## 📊 Benchmarks
