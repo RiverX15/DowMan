@@ -107,11 +107,6 @@ under artificial chaos.
 | `artificial_delay_max_seconds` | `0.06`         | Max random latency injected into the local test server.     |
 | `artificial_timeout_seconds`   | `0.3`          | Time after which the test server force-closes a connection. |
 
-> **⚠️ Note on Test Parameters:** The values in [`tests/config_test.toml`](tests/config_test.toml) and
-> [`tests/test_integration.py`](tests/test_integration.py) are carefully tuned to ensure the test runner can interrupt
-> downloads deterministically. Significantly increasing `max_concurrent` or `chunk_size_mb` may cause downloads to
-> finish before the test script can trigger interruption scenarios, leading to false failures.
-
 ---
 
 ## 📊 Benchmarks

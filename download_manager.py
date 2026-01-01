@@ -181,24 +181,29 @@ class DownloadManager:
         """Main worker function."""
         while True:
             job = await self.queue.get()
-            r = job.get('range')
-            requeue_count = job.get('requeue_count')
             try:
-                self.logger.debug(f'Worker {worker_id} fetched task range {r[0]}-{r[1]} successfully.')
-                self.logger.debug(f'Worker {worker_id} attempting task range {r[0]}-{r[1]}.')
-                await self._download_chunk(session, r[0], r[1], worker_id)
-                self.progress.advance(task_id, advance=r[1]-r[0]+1)
-                self.logger.debug(f'Worker {worker_id} completed task range {r[0]}-{r[1]} successfully.')
-            except Exception as e:
-                if requeue_count > self.max_requeue_limit:
-                    self.logger.critical(f'Task range {r[0]}-{r[1]} exceeded maximum re-queue limit. Dropping chunk.')
-                    self.has_dropped_chunks = True
-                else:
-                    self.logger.debug(f'Worker {worker_id} failed on task range {r[0]}-{r[1]}: {e}. Re-queueing.')
-                    self.queue.put_nowait({'range': r, 'requeue_count': requeue_count+1})
+                await self._process_job(session, job, worker_id, task_id)
             finally:
                 self.queue.task_done()
                 self.logger.debug(f'Worker {worker_id} free.')
+
+    async def _process_job(self, session: aiohttp.ClientSession, job, worker_id: int, task_id: int):
+        """Attempt to download a specific chunk."""
+        r = job.get('range')
+        requeue_count = job.get('requeue_count')
+        try:
+            self.logger.debug(f'Worker {worker_id} fetched task range {r[0]}-{r[1]} successfully.')
+            self.logger.debug(f'Worker {worker_id} attempting task range {r[0]}-{r[1]}.')
+            await self._download_chunk(session, r[0], r[1], worker_id)
+            self.progress.advance(task_id, advance=r[1] - r[0] + 1)
+            self.logger.debug(f'Worker {worker_id} completed task range {r[0]}-{r[1]} successfully.')
+        except Exception as e:
+            if requeue_count > self.max_requeue_limit:
+                self.logger.critical(f'Task range {r[0]}-{r[1]} exceeded maximum re-queue limit. Dropping chunk.')
+                self.has_dropped_chunks = True
+            else:
+                self.logger.debug(f'Worker {worker_id} failed on task range {r[0]}-{r[1]}: {e}. Re-queueing.')
+                self.queue.put_nowait({'range': r, 'requeue_count': requeue_count + 1})
 
     def _populate_queue(self, file_size: int):
         """Populate download queue with specified file size."""
@@ -325,14 +330,14 @@ class DownloadManager:
             with open(f"{self.filename}.dowman", "r") as f:
                 state = json.load(f)
                 if state.get('url') != self.url:
-                    logger.warning('State file for given url not found. Downloading file from scratch.')
+                    self.logger.warning('State file for given url not found. Downloading file from scratch.')
                     raise FileNotFoundError
                 else:
                     if not os.path.exists(self.filename):
-                        logger.warning('State file found but downloaded file missing. Restarting download.')
+                        self.logger.warning('State file found but downloaded file missing. Restarting download.')
                         raise FileNotFoundError
                     else:
-                        logger.info(f'Resuming file download.')
+                        self.logger.info(f'Resuming file download.')
                         return state
         except FileNotFoundError:
             state = dict()

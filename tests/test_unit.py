@@ -15,7 +15,7 @@ from download_manager import DownloadManager
 def manager():
     with open('config_test.toml', 'rb') as f:
         config = tomllib.load(f)
-    dm = DownloadManager("https://example.com", config)
+    dm = DownloadManager("http://localhost:8080/testfile.bin", config)
     dm.download_state = {
         'chunk_size': 1024, # force 1KB chunks
         'completed_ranges': []
@@ -44,13 +44,7 @@ async def test_worker_requeues_on_failure(manager):
     # mock _download_chunk to fail
     manager._download_chunk = MagicMock(side_effect=Exception('Network Error'))
     job = await manager.queue.get()
-    r, requeue_count = job['range'], job['requeue_count']
-    # force crash since we want to test requeue logic
-    try:
-        raise Exception('Fake Error')
-    except Exception:
-        if requeue_count <= manager.max_requeue_limit:
-            manager.queue.put_nowait({'range': r, 'requeue_count': requeue_count+1})
+    await manager._process_job(MagicMock(), job, MagicMock(), MagicMock())
     assert manager.queue.qsize() == 1
     new_job = await manager.queue.get()
     assert new_job['requeue_count'] == 1
