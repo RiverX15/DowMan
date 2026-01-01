@@ -98,10 +98,15 @@ class DownloadManager:
                     raise Exception("Download incomplete due to dropped chunks.")
                 self.logger.info("Download finished.")
                 if os.path.exists(f'{self.filename}.dowman'):
+                    should_remove = False
                     with open(f'{self.filename}.dowman', 'r') as f:
                         state = json.load(f)
                         if state.get('url') == self.url:
-                            os.remove(f'{self.filename}.dowman')
+                            # # cannot remove file here since Windows locks open files
+                            # os.remove(f'{self.filename}.dowman')
+                            should_remove = True
+                    if should_remove:
+                        os.remove(f'{self.filename}.dowman')
 
     def save_state(self):
         """Save download state to JSON."""
